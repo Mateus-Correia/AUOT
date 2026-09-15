@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Configurador SAGE → OTS</title>
+<meta name="description" content="Compara a base do SAGE com a configuração de importação do OTS e gera a planilha atualizada — tudo processado no navegador, nenhum arquivo é enviado a servidor algum." />
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+  // Alguns ambientes não expõem setImmediate nativamente; definir ANTES de
+  // carregar o JSZip evita ambiguidade na detecção interna de agendamento
+  // assíncrono da biblioteca (ela decide isso já na primeira execução).
+  if (typeof window.setImmediate === "undefined") {
+    window.setImmediate = function (fn) { return setTimeout(fn, 0); };
+  }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+  :root {
+    --bg: #EEF1EF;
+    --painel: #FFFFFF;
+    --tinta: #132420;
+    --tinta-suave: #5B6E68;
+    --linha: #D7DED9;
+    --acento: #1F6E52;
+    --acento-suave: #DCEAE2;
+    --ok: #1F6E52;
+    --ok-bg: #DCEAE2;
+    --atencao: #8A6116;
+    --atencao-bg: #FBF0D9;
+    --alerta: #9B3B2E;
+    --alerta-bg: #F6E1DC;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Arial, "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--tinta);
+  }
+  #app { max-width: 880px; margin: 0 auto; padding: 28px 20px; }
+  .eyebrow { font-size: 12px; letter-spacing: 0.3px; color: var(--acento); font-weight: 700; margin-bottom: 4px; }
+  h1 { font-size: 24px; margin: 0; font-weight: 700; }
+  .lead { font-size: 13.5px; color: var(--tinta-suave); margin-top: 6px; max-width: 620px; line-height: 1.5; }
+  .cartoes { display: flex; gap: 14px; flex-wrap: wrap; margin: 20px 0; }
+  .cartao {
+    border: 1px solid var(--linha); border-radius: 4px; padding: 16px;
+    background: var(--painel); flex: 1; min-width: 220px;
+  }
+  .cartao-topo { display: flex; justify-content: space-between; align-items: baseline; }
+  .cartao h3 { margin: 0; font-size: 14px; font-weight: 700; }
+  .cartao .opcional { font-size: 11px; color: var(--tinta-suave); }
+  .cartao p { font-size: 12px; color: var(--tinta-suave); margin: 6px 0 12px; line-height: 1.4; }
+  .botao-arquivo {
+    display: inline-block; font-size: 13px; padding: 7px 14px; border-radius: 3px; cursor: pointer;
+    background: var(--acento-suave); color: var(--acento); font-weight: 600;
+  }
+  .botao-arquivo.carregado { background: var(--ok-bg); color: var(--ok); }
+  .nome-arquivo { font-size: 12px; color: var(--tinta); margin-top: 8px; word-break: break-all; }
+  .caixa {
+    background: var(--painel); border: 1px solid var(--linha); border-radius: 4px;
+    padding: 16px; margin-bottom: 20px;
+  }
+  .caixa-titulo { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  select {
+    font-size: 13px; padding: 7px 10px; border-radius: 3px; border: 1px solid var(--linha);
+    background: #fff; min-width: 300px;
+  }
+  button {
+    font-size: 13px; font-weight: 700; padding: 8px 16px; border-radius: 3px; border: none;
+    cursor: pointer; color: #fff;
+  }
+  button:disabled { background: #C9C4B7 !important; cursor: not-allowed; }
+  #btn-diagnostico { background: var(--tinta); }
+  #btn-aplicar { background: var(--acento); font-size: 13.5px; padding: 10px 18px; margin-top: 14px; }
+  .erro { background: var(--alerta-bg); color: var(--alerta); padding: 10px 14px; border-radius: 4px; font-size: 13px; margin-bottom: 16px; }
+  .resultado-titulo { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+  .resultado-linha {
+    background: var(--painel); border: 1px solid var(--linha); border-radius: 4px;
+    padding: 14px; margin-bottom: 10px;
+  }
+  .resultado-cabecalho { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
+  .resultado-cabecalho span { color: var(--tinta-suave); }
+  .etiquetas { display: flex; gap: 6px; flex-wrap: wrap; }
+  .etiqueta { font-size: 12px; padding: 2px 8px; border-radius: 3px; font-weight: 600; white-space: nowrap; }
+  .et-ok { color: var(--ok); background: var(--ok-bg); }
+  .et-atencao { color: var(--atencao); background: var(--atencao-bg); }
+  .et-alerta { color: var(--alerta); background: var(--alerta-bg); }
+  .nota { font-size: 12px; color: var(--tinta-suave); margin-top: 8px; max-width: 560px; line-height: 1.5; }
+  .resumo-aplicado { background: var(--ok-bg); color: var(--ok); border-radius: 4px; padding: 12px; font-size: 13px; margin-top: 10px; }
+  .conflito-nota { font-size: 12.5px; color: var(--atencao); margin-top: 4px; }
+  .oculto { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="eyebrow">SAGE → OTS</div>
+  <h1>Configurador de pontos novos</h1>
+  <p class="lead">
+    Carregue os três arquivos, escolha a subestação e o motor identifica os pontos que existem
+    no SAGE e ainda não estão configurados no OTS — e já resolve o que puder, direto neste
+    arquivo, sem enviar nada pra fora. Este arquivo roda sozinho: não precisa de internet além
+    de carregar esta página, e nenhum dado sai do seu computador.
+  </p>
+
+  <div class="cartoes">
+    <div class="cartao">
+      <div class="cartao-topo"><h3>1. Base do SAGE</h3></div>
+      <p>Template_ems.xls — pode conter uma ou mais instalações.</p>
+      <label>
+        <input type="file" id="arq-sage" accept=".xls,.xlsx" class="oculto" />
+        <span class="botao-arquivo" id="btn-arq-sage">Escolher arquivo</span>
+      </label>
+      <div class="nome-arquivo" id="nome-sage"></div>
+    </div>
+    <div class="cartao">
+      <div class="cartao-topo"><h3>2. Configuração do OTS</h3></div>
+      <p>Configuracao_da_importacao.xlsm — o arquivo que vai ser atualizado.</p>
+      <label>
+        <input type="file" id="arq-config" accept=".xlsm,.xlsx" class="oculto" />
+        <span class="botao-arquivo" id="btn-arq-config">Escolher arquivo</span>
+      </label>
+      <div class="nome-arquivo" id="nome-config"></div>
+    </div>
+    <div class="cartao">
+      <div class="cartao-topo"><h3>3. Modelo elétrico</h3><span class="opcional">opcional</span></div>
+      <p>Export do Elipse (Model_AAAAMMDD_HHMMSS.xlsx) — melhora a resolução de equipamentos.</p>
+      <label>
+        <input type="file" id="arq-modelo" accept=".xlsx" class="oculto" />
+        <span class="botao-arquivo" id="btn-arq-modelo">Escolher arquivo</span>
+      </label>
+      <div class="nome-arquivo" id="nome-modelo"></div>
+    </div>
+  </div>
+
+  <div id="erro-area"></div>
+
+  <div class="caixa oculto" id="caixa-subestacao">
+    <div class="caixa-titulo">Subestação encontrada no arquivo do SAGE</div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <select id="select-prefixo"></select>
+      <button id="btn-diagnostico">Rodar diagnóstico</button>
+    </div>
+  </div>
+
+  <div id="area-resultado"></div>
+</div>
+
+<script>
+/* ============================================================
+   MOTOR (mesma lógica validada em Python/atualizador_ots.py e
+   conferida em Node.js contra os arquivos reais)
+   ============================================================ */
+
+const SAGE_SHEET_TO_OTS_SHEET = { PAS: "Medidas elétricas", CGS: "Comandos discretos", PDS: "Medidas discretas" };
+const ID_COLUMN_IN_OTS = { "Medidas elétricas": "ID da medida no SCADA", "Comandos discretos": "ID", "Medidas discretas": "ID" };
+const CAMPOS_PARA_APRENDER = {
+  "Medidas elétricas": ["Terminal", "MeasurementType", "UnitPrefix", "Coeficiente", "Tipo do equipamento", "NOME/Descrição"],
+  "Comandos discretos": ["CommandType", "CommandType.Trip", "CommandType.Close", "Texto trip", "Texto close", "NOME"],
+  "Medidas discretas": ["MeasurementType", "MeasurementType.Off", "MeasurementType.On", "Texto off", "Texto on", "É PAC?", "NOME"],
+};
+const COLUNA_PATHNAME_NA_OTS = { "Medidas elétricas": "PathName do equipamento", "Comandos discretos": "PATHNAME EQP", "Medidas discretas": "PATHNAME EQP" };
+const COLUNA_OBSERVACAO_NA_OTS = { "Medidas elétricas": "Observações", "Comandos discretos": "Observação", "Medidas discretas": "Observação" };
+const ABAS_MODELO_ELETRICO = ["IEDBREACT", "IEDBCAP", "IEDBLOAD", "IEDBGEN", "IEDBBREAKER", "IEDBSWITCH", "IEDBTRANSF3W", "IEDBBUSBAR"];
+
+const NOMES_CONHECIDOS = {
+  ABT: "Abdon Batista", BLU: "Blumenau", CNO: "Campos Novos", AUID: "Araçuaí 2", SNDD: "Santos Dumont",
+  SP: "Sinop", BN: "Brasnorte", SS: "Sorriso", SR: "Santa Maria", CN: "Castanhal", GP2: "Gaspar",
+  BGR: "Barra Grande (a confirmar)", LAG: "Lages (a confirmar)", RSU: "Rio do Sul (a confirmar)",
+  JB: "Juba (a confirmar)", NM: "Nova Mutum (a confirmar)", JI: "Juína (a confirmar)",
+  PI: "Parecis (a confirmar)", POD: "Poções II (a confirmar)", POT: "Poções III (a confirmar)",
+  ICA: "Ibicoara (a confirmar)", MCH: "Machadinho (a confirmar)", MQT: "Mesquita (a confirmar)",
+  JN2: "João Neiva 2 (a confirmar)", MCLD: "Montes Claros (a confirmar)", IRP: "Irapé (a confirmar)",
+  JF1: "Juiz de Fora 1 (a confirmar)", DA: "Dardanelos (a confirmar)", VC: "Vila do Conde (a confirmar)",
+  AC: "Açailândia (a confirmar)", TC: "Tucuruí (a confirmar)", MB: "Marabá (a confirmar)",
+  IZ: "Imperatriz (a confirmar)", PD: "Presidente Dutra (a confirmar)",
+};
+
+function sheetToRows(ws, headerRowIdx) {
+  const all = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+  return { header: all[headerRowIdx], rows: all.slice(headerRowIdx + 1) };
+}
+
+function baterToken(candidato, tokensConhecidos) {
+  if (tokensConhecidos.has(candidato)) return candidato;
+  const m = candidato.match(/^[A-Za-zÀ-ÿ]{1,4}([0-9][0-9A-Za-zÀ-ÿ-]*)$/);
+  if (m && tokensConhecidos.has(m[1])) return m[1];
+  return null;
+}
+
+function extrairPrefixoDoId(idv) {
+  const m = idv.match(/^([A-Za-zÀ-ÿ]+[0-9]?)_/);
+  return m ? m[1] : null;
+}
+
+function extrairSufixo(idv, tokensPorPrefixo) {
+  const prefixo = extrairPrefixoDoId(idv);
+  if (!prefixo) return { prefixo: null, equip: null, sufixo: idv };
+  const resto = idv.slice(prefixo.length + 1);
+  const partes = resto.split("_");
+  const conhecidos = tokensPorPrefixo.get(prefixo) || new Set();
+  for (let n = Math.min(4, partes.length); n >= 1; n--) {
+    const candidato = partes.slice(0, n).join("_");
+    const achou = baterToken(candidato, conhecidos);
+    if (achou) return { prefixo, equip: achou, sufixo: partes.slice(n).join("_") };
+  }
+  return { prefixo, equip: partes[0] || null, sufixo: partes.slice(1).join("_") };
+}
+
+function resolverEquipamento(idv, prefixo, tokensPorPrefixo, pathnamePorToken, guidPorToken, bvPorToken) {
+  const resto = idv.slice(prefixo.length + 1);
+  const partes = resto.split("_");
+  const conhecidos = tokensPorPrefixo.get(prefixo) || new Set();
+  for (let n = Math.min(4, partes.length); n >= 1; n--) {
+    const candidato = partes.slice(0, n).join("_");
+    const achou = baterToken(candidato, conhecidos);
+    if (achou) {
+      return {
+        pathname: (pathnamePorToken.get(prefixo) || {})[achou] ?? null,
+        equipToken: achou,
+        guid: (guidPorToken.get(prefixo) || {})[achou] ?? null,
+        baseVoltage: (bvPorToken.get(prefixo) || {})[achou] ?? null,
+      };
+    }
+  }
+  return { pathname: null, equipToken: null, guid: null, baseVoltage: null };
+}
+
+function carregarEquipIndexEstruturaEqps(wbConfig) {
+  const ws = wbConfig.Sheets["EstruturaEqps"];
+  const { rows } = sheetToRows(ws, 0);
+  const tokensPorPrefixo = new Map();
+  const pathnamePorToken = new Map();
+  const guidPorToken = new Map();
+  const bvPorToken = new Map();
+  for (const r of rows) {
+    const prefixo = r[2];
+    if (!prefixo) continue;
+    const eqpGuid = r[0], vao = r[3], equipamento = r[4], pn = r[6], bv = r[7];
+    if (!tokensPorPrefixo.has(prefixo)) {
+      tokensPorPrefixo.set(prefixo, new Set());
+      pathnamePorToken.set(prefixo, {});
+      guidPorToken.set(prefixo, {});
+      bvPorToken.set(prefixo, {});
+    }
+    if (equipamento != null) {
+      const tok = String(equipamento);
+      tokensPorPrefixo.get(prefixo).add(tok);
+      pathnamePorToken.get(prefixo)[tok] = pn;
+      guidPorToken.get(prefixo)[tok] = eqpGuid;
+      bvPorToken.get(prefixo)[tok] = bv;
+    }
+    if (vao != null) {
+      const tok = String(vao);
+      tokensPorPrefixo.get(prefixo).add(tok);
+      if (!(tok in pathnamePorToken.get(prefixo))) pathnamePorToken.get(prefixo)[tok] = pn;
+    }
+  }
+  return { tokensPorPrefixo, pathnamePorToken, guidPorToken, bvPorToken };
+}
+
+function carregarEquipIndexModelo(wbModel) {
+  const tokensPorPrefixo = new Map();
+  const pathnamePorToken = new Map();
+  const bvPorToken = new Map();
+  for (const sheetName of ABAS_MODELO_ELETRICO) {
+    const ws = wbModel.Sheets[sheetName];
+    if (!ws) continue;
+    const { header, rows } = sheetToRows(ws, 0);
+    const idxContainer = header.indexOf("Container");
+    const idxName = header.indexOf("Name");
+    const idxPathName = header.indexOf("PathName");
+    const idxBV = header.indexOf("BaseVoltage");
+    if (idxContainer < 0 || idxName < 0) continue;
+    for (const r of rows) {
+      const container = r[idxContainer];
+      const nome = r[idxName];
+      if (container == null || nome == null) continue;
+      if (!tokensPorPrefixo.has(container)) {
+        tokensPorPrefixo.set(container, new Set());
+        pathnamePorToken.set(container, {});
+        bvPorToken.set(container, {});
+      }
+      tokensPorPrefixo.get(container).add(String(nome));
+      pathnamePorToken.get(container)[String(nome)] = idxPathName >= 0 ? r[idxPathName] : null;
+      if (idxBV >= 0 && r[idxBV] != null) bvPorToken.get(container)[String(nome)] = r[idxBV];
+    }
+  }
+  return { tokensPorPrefixo, pathnamePorToken, bvPorToken };
+}
+
+function carregarTodosEquipIndex(wbConfig, wbModel) {
+  const a = carregarEquipIndexEstruturaEqps(wbConfig);
+  const tokensPorPrefixo = new Map();
+  const pathnamePorToken = new Map();
+  for (const [k, v] of a.tokensPorPrefixo) tokensPorPrefixo.set(k, new Set(v));
+  for (const [k, v] of a.pathnamePorToken) pathnamePorToken.set(k, Object.assign({}, v));
+  const conflitos = [];
+  if (wbModel) {
+    const b = carregarEquipIndexModelo(wbModel);
+    for (const [prefixo, toks] of b.tokensPorPrefixo) {
+      if (!tokensPorPrefixo.has(prefixo)) { tokensPorPrefixo.set(prefixo, new Set()); pathnamePorToken.set(prefixo, {}); }
+      for (const tok of toks) {
+        tokensPorPrefixo.get(prefixo).add(tok);
+        const novo = b.pathnamePorToken.get(prefixo)[tok];
+        const antigo = pathnamePorToken.get(prefixo)[tok];
+        if (antigo && novo && antigo !== novo) conflitos.push([prefixo, tok, antigo, novo]);
+        pathnamePorToken.get(prefixo)[tok] = novo;
+      }
+    }
+  }
+  return { tokensPorPrefixo, pathnamePorToken, guidPorToken: a.guidPorToken, bvPorToken: a.bvPorToken, conflitos };
+}
+
+function carregarSage(wbSage, prefixo) {
+  const out = {};
+  for (const sheetName of Object.keys(SAGE_SHEET_TO_OTS_SHEET)) {
+    const ws = wbSage.Sheets[sheetName];
+    const { header, rows } = sheetToRows(ws, 1);
+    const idxId = header.indexOf("ID");
+    out[sheetName] = rows.filter((r) => r[idxId] != null && String(r[idxId]).startsWith(prefixo + "_")).map((r) => String(r[idxId]));
+  }
+  return out;
+}
+
+function detectarPrefixos(wbSage) {
+  const contagem = new Map();
+  for (const sheetName of Object.keys(SAGE_SHEET_TO_OTS_SHEET)) {
+    const ws = wbSage.Sheets[sheetName];
+    if (!ws) continue;
+    const { header, rows } = sheetToRows(ws, 1);
+    const idxId = header.indexOf("ID");
+    if (idxId < 0) continue;
+    for (const r of rows) {
+      const idv = r[idxId];
+      if (idv == null) continue;
+      const p = extrairPrefixoDoId(String(idv));
+      if (!p) continue;
+      contagem.set(p, (contagem.get(p) || 0) + 1);
+    }
+  }
+  return [...contagem.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function carregarOtsCompleto(wbConfig) {
+  const out = {};
+  for (const sheetName of Object.keys(ID_COLUMN_IN_OTS)) {
+    const ws = wbConfig.Sheets[sheetName];
+    out[sheetName] = sheetToRows(ws, 0);
+  }
+  return out;
+}
+
+function construirTemplates(otsCompleto, tokensPorPrefixo) {
+  const templates = {};
+  for (const [sheetName, campos] of Object.entries(CAMPOS_PARA_APRENDER)) {
+    const { header, rows } = otsCompleto[sheetName];
+    const idx = {};
+    header.forEach((h, i) => (idx[h] = i));
+    const idxId = idx[ID_COLUMN_IN_OTS[sheetName]];
+    const agg = new Map();
+    for (const r of rows) {
+      const idv = r[idxId];
+      if (idv == null) continue;
+      const { sufixo } = extrairSufixo(String(idv), tokensPorPrefixo);
+      if (!sufixo) continue;
+      if (!agg.has(sufixo)) agg.set(sufixo, new Map());
+      const porCampo = agg.get(sufixo);
+      for (const campo of campos) {
+        const ci = idx[campo];
+        if (ci == null) continue;
+        const v = r[ci];
+        if (v == null) continue;
+        if (!porCampo.has(campo)) porCampo.set(campo, new Map());
+        const cont = porCampo.get(campo);
+        cont.set(v, (cont.get(v) || 0) + 1);
+      }
+    }
+    templates[sheetName] = agg;
+  }
+  return templates;
+}
+
+function sugerirValores(sufixo, sheetName, templates, minExemplos) {
+  minExemplos = minExemplos || 2;
+  const agg = templates[sheetName].get(sufixo);
+  if (!agg) return { sugestao: {}, confianca: "SEM_HISTORICO", nExemplos: 0 };
+  let nExemplos = 0;
+  const sugestao = {};
+  let unanime = true;
+  for (const [campo, cont] of agg) {
+    let total = 0, melhor = null, melhorN = -1;
+    for (const [v, n] of cont) { total += n; if (n > melhorN) { melhorN = n; melhor = v; } }
+    nExemplos = Math.max(nExemplos, total);
+    sugestao[campo] = melhor;
+    if (cont.size > 1) unanime = false;
+  }
+  if (nExemplos < minExemplos) return { sugestao, confianca: "POUCOS_EXEMPLOS", nExemplos };
+  return { sugestao, confianca: unanime ? "ALTA" : "REVISAR_DIVERGENCIA", nExemplos };
+}
+
+function diagnosticarESugerir(wbSage, wbConfig, prefixo, wbModel) {
+  const idx0 = carregarTodosEquipIndex(wbConfig, wbModel);
+  const tokensPorPrefixo = idx0.tokensPorPrefixo, pathnamePorToken = idx0.pathnamePorToken;
+  const guidPorToken = idx0.guidPorToken, bvPorToken = idx0.bvPorToken, conflitos = idx0.conflitos;
+  const otsCompleto = carregarOtsCompleto(wbConfig);
+  const templates = construirTemplates(otsCompleto, tokensPorPrefixo);
+  const sage = carregarSage(wbSage, prefixo);
+
+  const resultado = {};
+  for (const [sageSheet, otsSheet] of Object.entries(SAGE_SHEET_TO_OTS_SHEET)) {
+    const idColOts = ID_COLUMN_IN_OTS[otsSheet];
+    const { header, rows } = otsCompleto[otsSheet];
+    const idx = {};
+    header.forEach((h, i) => (idx[h] = i));
+    const idsOts = new Set(rows.map((r) => r[idx[idColOts]]).filter((v) => v != null).map(String));
+    const idsSage = new Set(sage[sageSheet]);
+    const faltando = [...idsSage].filter((x) => !idsOts.has(x)).sort();
+
+    const linhas = [];
+    for (const idv of faltando) {
+      const { sufixo } = extrairSufixo(idv, tokensPorPrefixo);
+      const re = resolverEquipamento(idv, prefixo, tokensPorPrefixo, pathnamePorToken, guidPorToken, bvPorToken);
+      const sg = sugerirValores(sufixo, otsSheet, templates);
+      let status;
+      if (re.pathname == null) status = "REQUER_MODELAGEM_ELETRICA";
+      else if (sg.confianca === "ALTA") status = "PRONTO_PARA_REVISAO";
+      else if (sg.confianca === "REVISAR_DIVERGENCIA") status = "REVISAR_DIVERGENCIA_HISTORICA";
+      else if (sg.confianca === "POUCOS_EXEMPLOS") status = "POUCOS_EXEMPLOS_HISTORICOS";
+      else status = "SEM_TEMPLATE_CONHECIDO";
+      linhas.push({ ID: idv, Sufixo_funcional: sufixo, Equipamento_detectado: re.equipToken, PathName_sugerido: re.pathname,
+        GUID_equipamento: re.guid, BaseVoltage: re.baseVoltage, Status: status, Confianca_template: sg.confianca,
+        N_exemplos_historicos: sg.nExemplos, sugestao: sg.sugestao });
+    }
+    resultado[sageSheet] = { otsSheet, linhas, totalSage: idsSage.size, jaConfigurado: [...idsSage].filter((x) => idsOts.has(x)).length };
+  }
+  return { resultado, conflitos };
+}
+
+function proximaLinhaLivre(ws) {
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  return range.e.r + 1;
+}
+function setCell(ws, r, c, value) {
+  const addr = XLSX.utils.encode_cell({ r, c });
+  if (value === null || value === undefined) { delete ws[addr]; return; }
+  let t = "s";
+  if (typeof value === "number") t = "n";
+  else if (typeof value === "boolean") t = "b";
+  ws[addr] = { v: value, t };
+}
+function expandirRef(ws, novaUltimaLinha, ncols) {
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  range.e.r = Math.max(range.e.r, novaUltimaLinha);
+  range.e.c = Math.max(range.e.c, ncols - 1);
+  ws["!ref"] = XLSX.utils.encode_range(range);
+}
+
+function aplicarAlteracoes(wbSage, wbConfig, prefixo, wbModel) {
+  const d = diagnosticarESugerir(wbSage, wbConfig, prefixo, wbModel);
+  const resultado = d.resultado, conflitos = d.conflitos;
+  const hoje = new Date().toLocaleString("pt-BR");
+  const escritas = {};
+  const pendencias = {};
+
+  for (const [sageSheet, info] of Object.entries(resultado)) {
+    const otsSheet = info.otsSheet;
+    const ws = wbConfig.Sheets[otsSheet];
+    const { header } = sheetToRows(ws, 0);
+    const idx = {};
+    header.forEach((h, i) => (idx[h] = i));
+    let prox = proximaLinhaLivre(ws);
+    escritas[sageSheet] = [];
+    pendencias[sageSheet] = [];
+
+    for (const linha of info.linhas) {
+      if (linha.Status === "REQUER_MODELAGEM_ELETRICA") { pendencias[sageSheet].push(linha); continue; }
+      setCell(ws, prox, idx[ID_COLUMN_IN_OTS[otsSheet]], linha.ID);
+      if (COLUNA_PATHNAME_NA_OTS[otsSheet] in idx) setCell(ws, prox, idx[COLUNA_PATHNAME_NA_OTS[otsSheet]], linha.PathName_sugerido);
+      if (otsSheet === "Medidas elétricas") {
+        if ("ID do equipamento no modelo do OTS" in idx) setCell(ws, prox, idx["ID do equipamento no modelo do OTS"], linha.GUID_equipamento);
+        if ("TAC" in idx) setCell(ws, prox, idx["TAC"], prefixo + "_TAC");
+        if ("BaseVoltage" in idx) setCell(ws, prox, idx["BaseVoltage"], linha.BaseVoltage);
+      }
+      for (const campo of CAMPOS_PARA_APRENDER[otsSheet]) {
+        if (campo in idx && campo in linha.sugestao) setCell(ws, prox, idx[campo], linha.sugestao[campo]);
+      }
+      const nota = "[Automático " + hoje + "] sufixo '" + linha.Sufixo_funcional + "', " + linha.N_exemplos_historicos +
+        " exemplo(s) em outras subestações (" + linha.Confianca_template + "). Colunas PAC/CopiCmdType não preenchidas — conferir.";
+      if (COLUNA_OBSERVACAO_NA_OTS[otsSheet] in idx) setCell(ws, prox, idx[COLUNA_OBSERVACAO_NA_OTS[otsSheet]], nota);
+      expandirRef(ws, prox, header.length);
+      escritas[sageSheet].push(linha);
+      prox += 1;
+    }
+  }
+
+  const todasPend = Object.values(pendencias).reduce((a, b) => a.concat(b), []);
+  if (todasPend.length) {
+    const cols = ["Aba destino", "ID", "Sufixo_funcional", "Equipamento_procurado", "Motivo"];
+    const dados = [cols];
+    for (const [sageSheet, pend] of Object.entries(pendencias)) {
+      const otsSheet = SAGE_SHEET_TO_OTS_SHEET[sageSheet];
+      for (const l of pend) dados.push([otsSheet, l.ID, l.Sufixo_funcional, l.Equipamento_detectado, "Equipamento ainda não existe no Modelador Elétrico — modelar antes de configurar o ponto."]);
+    }
+    const wsPend = XLSX.utils.aoa_to_sheet(dados);
+    XLSX.utils.book_append_sheet(wbConfig, wsPend, ("Pendencias_" + prefixo).slice(0, 31));
+  }
+
+  const dadosLog = [
+    ["Log de alterações aplicadas — Instalação: " + prefixo],
+    ["Gerado em " + hoje],
+    [],
+    ["Aba", "Pontos no SAGE", "Já existiam", "Escritos agora", "Pendentes (modelagem elétrica)"],
+  ];
+  for (const [sageSheet, info] of Object.entries(resultado)) {
+    dadosLog.push([info.otsSheet, info.totalSage, info.jaConfigurado, escritas[sageSheet].length, pendencias[sageSheet].length]);
+  }
+  if (conflitos.length) {
+    dadosLog.push([]);
+    dadosLog.push(["Conflitos de PathName entre EstruturaEqps e o modelo elétrico:"]);
+    for (const c of conflitos) dadosLog.push([JSON.stringify(c)]);
+  }
+  const wsLog = XLSX.utils.aoa_to_sheet(dadosLog);
+  XLSX.utils.book_append_sheet(wbConfig, wsLog, ("Log_Alteracoes_" + prefixo).slice(0, 31));
+
+  const somaEscritas = {}, somaPendencias = {};
+  for (const k in escritas) somaEscritas[k] = escritas[k].length;
+  for (const k in pendencias) somaPendencias[k] = pendencias[k].length;
+  return { escritas: somaEscritas, pendencias: somaPendencias };
+}
+
+/* ============================================================
+   EDITOR CIRÚRGICO — trata o .xlsm como .zip de partes XML e só
+   toca no estritamente necessário (o resto fica byte a byte igual,
+   inclusive macros VBA e validações "extension" como a do Paralelismo).
+   ============================================================ */
+
+function colLetterCir(n) {
+  let s = "";
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+function xmlEscapeCir(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+const RE_REF_LINHA_MODELO = /(?<![A-Za-z0-9_])(\$?[A-Z]{1,3}\$?)2\b/g;
+function adaptarFormulaParaLinha(tpl, n) { return tpl.replace(RE_REF_LINHA_MODELO, (_, g1) => `${g1}${n}`); }
+
+function parseTabelaCir(xmlStr) {
+  const nome = xmlStr.match(/name="([^"]+)"/)[1];
+  const ref = xmlStr.match(/\bref="([A-Z]+\d+:[A-Z]+\d+)"/)[1];
+  const colunas = []; const formulas = {};
+  const reCol = /<tableColumn\b([^>]*?)(?:\/>|>([\s\S]*?)<\/tableColumn>)/g;
+  let m;
+  while ((m = reCol.exec(xmlStr)) !== null) {
+    const attrs = m[1], inner = m[2] || "";
+    const nm = attrs.match(/name="([^"]*)"/);
+    const nomeCol = nm ? nm[1] : null;
+    colunas.push(nomeCol);
+    const fm = inner.match(/<calculatedColumnFormula>([\s\S]*?)<\/calculatedColumnFormula>/);
+    if (fm && nomeCol) formulas[nomeCol] = fm[1];
+  }
+  const ultimaLinha = parseInt(ref.match(/:[A-Z]+(\d+)$/)[1], 10);
+  return { nome, ref, colunas, formulasCalculadas: formulas, ultimaLinha };
+}
+function atualizarRefTabelaCir(xmlStr, novaUltimaLinha) {
+  const refAntigo = xmlStr.match(/\bref="([A-Z0-9:]+)"/)[1];
+  const partes = refAntigo.match(/^([A-Z]+)(\d+):([A-Z]+)\d+$/);
+  const novoRef = `${partes[1]}${partes[2]}:${partes[3]}${novaUltimaLinha}`;
+  return xmlStr.split(`ref="${refAntigo}"`).join(`ref="${novoRef}"`);
+}
+function valorParaXmlCellCir(colLetra, linhaNum, valor, tipoFormula, styleIdx) {
+  const ref = `${colLetra}${linhaNum}`;
+  const sAttr = styleIdx != null ? ` s="${styleIdx}"` : "";
+  if (tipoFormula != null) return `<c r="${ref}"${sAttr}><f>${xmlEscapeCir(tipoFormula)}</f></c>`;
+  if (valor === null || valor === undefined) return `<c r="${ref}"${sAttr}/>`;
+  if (typeof valor === "boolean") return `<c r="${ref}"${sAttr} t="b"><v>${valor ? 1 : 0}</v></c>`;
+  if (typeof valor === "number") return `<c r="${ref}"${sAttr}><v>${valor}</v></c>`;
+  const texto = xmlEscapeCir(String(valor));
+  const preserve = String(valor) !== String(valor).trim() ? ' xml:space="preserve"' : "";
+  return `<c r="${ref}"${sAttr} t="inlineStr"><is><t${preserve}>${texto}</t></is></c>`;
+}
+function extrairEstilosUltimaLinhaCir(sheetXml, n) {
+  const m = sheetXml.match(new RegExp(`<row r="${n}"[^>]*>([\\s\\S]*?)</row>`));
+  const estilos = {};
+  if (!m) return estilos;
+  const reCell = /<c r="([A-Z]+)\d+"(?:\s+s="(\d+)")?/g;
+  let cm;
+  while ((cm = reCell.exec(m[1])) !== null) if (cm[2] !== undefined) estilos[cm[1]] = parseInt(cm[2], 10);
+  return estilos;
+}
+function construirLinhaXmlCir(linhaNum, valoresPorColuna, colunasOrdem, formulasCalculadas, estilosPorColuna) {
+  const celulas = colunasOrdem.map((nomeCol, i) => {
+    const letra = colLetterCir(i + 1);
+    const estilo = estilosPorColuna[letra];
+    if (nomeCol in formulasCalculadas) {
+      return valorParaXmlCellCir(letra, linhaNum, null, adaptarFormulaParaLinha(formulasCalculadas[nomeCol], linhaNum), estilo);
+    }
+    const valor = valoresPorColuna[nomeCol];
+    return valorParaXmlCellCir(letra, linhaNum, valor === undefined ? null : valor, null, estilo);
+  });
+  return `<row r="${linhaNum}" spans="1:${colunasOrdem.length}">${celulas.join("")}</row>`;
+}
+function aplicarLinhasEmSheetCir(sheetXml, tabela, novasLinhasValores) {
+  const estilos = extrairEstilosUltimaLinhaCir(sheetXml, tabela.ultimaLinha);
+  let linhaNum = tabela.ultimaLinha;
+  const linhasXml = novasLinhasValores.map((valores) => {
+    linhaNum += 1;
+    return construirLinhaXmlCir(linhaNum, valores, tabela.colunas, tabela.formulasCalculadas, estilos);
+  });
+  let novoSheetXml = sheetXml.replace("</sheetData>", linhasXml.join("") + "</sheetData>");
+  const dimRe = /<dimension ref="([A-Z]+\d+):([A-Z]+)(\d+)"\/>/;
+  const dimM = novoSheetXml.match(dimRe);
+  if (dimM) novoSheetXml = novoSheetXml.replace(dimRe, `<dimension ref="${dimM[1]}:${dimM[2]}${linhaNum}"/>`);
+  return { novoSheetXml, novaUltimaLinha: linhaNum };
+}
+function garantirFullCalcOnLoadCir(wbXml) {
+  if (wbXml.includes("fullCalcOnLoad")) return wbXml;
+  return wbXml.replace(/<calcPr\b([^/]*)\/>/, '<calcPr$1 fullCalcOnLoad="1"/>');
+}
+
+const SHEET_FILE_CIR = {
+  "Medidas elétricas": ["xl/worksheets/sheet2.xml", "xl/tables/table2.xml"],
+  "Comandos discretos": ["xl/worksheets/sheet3.xml", "xl/tables/table3.xml"],
+  "Medidas discretas": ["xl/worksheets/sheet4.xml", "xl/tables/table4.xml"],
+};
+const SHEET_ALOCACAO_CIR = ["xl/worksheets/sheet11.xml", "xl/tables/table11.xml"];
+const SHEETS_QUE_USAM_ALOCACAO_CIR = new Set(["Comandos discretos", "Medidas discretas"]);
+const COLUNA_ID_CIR = { "Medidas elétricas": "ID da medida no SCADA", "Comandos discretos": "ID", "Medidas discretas": "ID" };
+
+function montarValoresLinhaCir(otsSheet, linha, prefixo, hoje) {
+  const valores = { [COLUNA_ID_CIR[otsSheet]]: linha.ID };
+  if (otsSheet === "Medidas elétricas") {
+    if (linha.GUID_equipamento) valores["ID do equipamento no modelo do OTS"] = linha.GUID_equipamento;
+    valores["TAC"] = `${prefixo}_TAC`;
+    if (linha.BaseVoltage != null) valores["BaseVoltage"] = linha.BaseVoltage;
+  }
+  for (const [k, v] of Object.entries(linha.sugestao || {})) valores[k] = v;
+  const obsCol = otsSheet === "Medidas elétricas" ? "Observações" : "Observação";
+  valores[obsCol] = `[Automático ${hoje}] sufixo '${linha.Sufixo_funcional}', ${linha.N_exemplos_historicos} exemplo(s) em outras subestações (${linha.Confianca_template}). Colunas PAC/CopiCmdType não preenchidas — conferir.`;
+  return valores;
+}
+
+async function aplicarCirurgico(sageWb, configArrayBuffer, prefixo, modeloWb) {
+  const configWbParaDiagnostico = XLSX.read(configArrayBuffer, { type: "array", bookVBA: true });
+  const { resultado, conflitos } = diagnosticarESugerir(sageWb, configWbParaDiagnostico, prefixo, modeloWb);
+
+  const zip = await JSZip.loadAsync(configArrayBuffer);
+  const hoje = new Date().toLocaleString("pt-BR");
+  const resumo = {};
+  const pendenciasTodas = [];
+  const entradasAlocacao = [];
+
+  for (const [sageSheet, info] of Object.entries(resultado)) {
+    const otsSheet = info.otsSheet;
+    const [sheetPath, tablePath] = SHEET_FILE_CIR[otsSheet];
+    const sheetXml = await zip.file(sheetPath).async("string");
+    const tableXml = await zip.file(tablePath).async("string");
+    const tabela = parseTabelaCir(tableXml);
+
+    const prontas = [], pendentes = [];
+    for (const linha of info.linhas) {
+      if (linha.Status === "REQUER_MODELAGEM_ELETRICA") { pendentes.push(linha); pendenciasTodas.push([otsSheet, linha]); }
+      else prontas.push(linha);
+    }
+    if (prontas.length) {
+      const valoresLinhas = prontas.map((l) => montarValoresLinhaCir(otsSheet, l, prefixo, hoje));
+      const { novoSheetXml, novaUltimaLinha } = aplicarLinhasEmSheetCir(sheetXml, tabela, valoresLinhas);
+      zip.file(sheetPath, novoSheetXml);
+      zip.file(tablePath, atualizarRefTabelaCir(tableXml, novaUltimaLinha));
+      if (SHEETS_QUE_USAM_ALOCACAO_CIR.has(otsSheet)) {
+        for (const l of prontas) if (l.PathName_sugerido) entradasAlocacao.push([l.ID, l.PathName_sugerido]);
+      }
+    }
+    resumo[sageSheet] = { escritas: prontas.length, pendentes: pendentes.length, totalSage: info.totalSage, jaConfigurado: info.jaConfigurado };
+  }
+
+  let puladas = 0;
+  if (entradasAlocacao.length) {
+    const [alocSheetPath, alocTablePath] = SHEET_ALOCACAO_CIR;
+    const alocSheetXml = await zip.file(alocSheetPath).async("string");
+    const alocTableXml = await zip.file(alocTablePath).async("string");
+    const alocTabela = parseTabelaCir(alocTableXml);
+    const idsExistentes = new Set([...alocSheetXml.matchAll(/<is><t[^>]*>([^<]*)<\/t><\/is>/g)].map((m) => m[1]));
+    const novasEntradas = entradasAlocacao.filter(([id]) => !idsExistentes.has(id));
+    puladas = entradasAlocacao.length - novasEntradas.length;
+    if (novasEntradas.length) {
+      const valoresAloc = novasEntradas.map(([id, pn]) => ({ "ID_SAGE/MED|CMD": id, PathName: pn }));
+      const { novoSheetXml, novaUltimaLinha } = aplicarLinhasEmSheetCir(alocSheetXml, alocTabela, valoresAloc);
+      zip.file(alocSheetPath, novoSheetXml);
+      zip.file(alocTablePath, atualizarRefTabelaCir(alocTableXml, novaUltimaLinha));
+    }
+  }
+
+  function gerarAbaSimplesXml(linhas) {
+    const linhasXml = linhas.map((linha, i) => {
+      const celulas = linha.map((v, j) => valorParaXmlCellCir(colLetterCir(j + 1), i + 1, v));
+      return `<row r="${i + 1}">${celulas.join("")}</row>`;
+    });
+    const maxCol = Math.max(...linhas.map((l) => l.length), 1);
+    const dim = `A1:${colLetterCir(maxCol)}${linhas.length}`;
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="${dim}"/><sheetData>${linhasXml.join("")}</sheetData></worksheet>`;
+  }
+  async function adicionarAbaCir(nomeAba, linhasDados) {
+    const nomesExistentes = Object.keys(zip.files);
+    const ns = nomesExistentes.filter((n) => /xl\/worksheets\/sheet\d+\.xml$/.test(n)).map((n) => parseInt(n.match(/sheet(\d+)\.xml$/)[1], 10));
+    const novoN = Math.max(...ns) + 1;
+    zip.file(`xl/worksheets/sheet${novoN}.xml`, gerarAbaSimplesXml(linhasDados));
+    const relsPath = "xl/_rels/workbook.xml.rels";
+    let relsXml = await zip.file(relsPath).async("string");
+    const rids = [...relsXml.matchAll(/Id="rId(\d+)"/g)].map((m) => parseInt(m[1], 10));
+    const novoRid = `rId${Math.max(...rids) + 1}`;
+    relsXml = relsXml.replace("</Relationships>", `<Relationship Id="${novoRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${novoN}.xml"/></Relationships>`);
+    zip.file(relsPath, relsXml);
+    const wbPath = "xl/workbook.xml";
+    let wbXml = await zip.file(wbPath).async("string");
+    const sheetIds = [...wbXml.matchAll(/sheetId="(\d+)"/g)].map((m) => parseInt(m[1], 10));
+    const novoSheetId = Math.max(...sheetIds, 0) + 1;
+    const nomeEscapado = nomeAba.replace(/&/g, "&amp;");
+    wbXml = wbXml.replace("</sheets>", `<sheet name="${nomeEscapado}" sheetId="${novoSheetId}" r:id="${novoRid}"/></sheets>`);
+    zip.file(wbPath, wbXml);
+    const ctPath = "[Content_Types].xml";
+    let ctXml = await zip.file(ctPath).async("string");
+    ctXml = ctXml.replace("</Types>", `<Override PartName="/xl/worksheets/sheet${novoN}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`);
+    zip.file(ctPath, ctXml);
+  }
+
+  if (pendenciasTodas.length) {
+    const linhas = [["Aba destino", "ID", "Sufixo_funcional", "Equipamento_procurado", "Motivo"]];
+    for (const [otsSheet, l] of pendenciasTodas) linhas.push([otsSheet, l.ID, l.Sufixo_funcional, l.Equipamento_detectado, "Equipamento ainda não existe no Modelador Elétrico — modelar antes de configurar o ponto."]);
+    await adicionarAbaCir(`Pendencias_${prefixo}`.slice(0, 31), linhas);
+  }
+  const linhasLog = [[`Log de alterações aplicadas — Instalação: ${prefixo}`], [`Gerado em ${hoje}`], [], ["Aba", "Pontos no SAGE", "Já existiam", "Escritos agora", "Pendentes (modelagem elétrica)"]];
+  for (const [sageSheet, r] of Object.entries(resumo)) linhasLog.push([resultado[sageSheet].otsSheet, r.totalSage, r.jaConfigurado, r.escritas, r.pendentes]);
+  if (conflitos.length) {
+    linhasLog.push([]); linhasLog.push(["Conflitos de PathName entre EstruturaEqps e o modelo elétrico:"]);
+    for (const c of conflitos) linhasLog.push([JSON.stringify(c)]);
+  }
+  linhasLog.push([]);
+  linhasLog.push([`Entradas adicionadas em ID-SAGE_EqpAlocado (ID->PathName): ${entradasAlocacao.length - puladas}`, `já existiam (não duplicadas): ${puladas}`]);
+  await adicionarAbaCir(`Log_Alteracoes_${prefixo}`.slice(0, 31), linhasLog);
+
+  const wbPath = "xl/workbook.xml";
+  zip.file(wbPath, garantirFullCalcOnLoadCir(await zip.file(wbPath).async("string")));
+
+  const outBuffer = await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+  return { outBuffer, resumo };
+}
+
+/* ============================================================
+   INTERFACE (JS puro, sem framework)
+   ============================================================ */
+
+const STATUS_INFO = {
+  PRONTO_PARA_REVISAO: { texto: "Pronto para revisão", classe: "et-ok" },
+  REVISAR_DIVERGENCIA_HISTORICA: { texto: "Revisar divergência", classe: "et-atencao" },
+  POUCOS_EXEMPLOS_HISTORICOS: { texto: "Poucos exemplos", classe: "et-atencao" },
+  REQUER_MODELAGEM_ELETRICA: { texto: "Requer modelagem elétrica", classe: "et-alerta" },
+  SEM_TEMPLATE_CONHECIDO: { texto: "Sem template conhecido", classe: "et-alerta" },
+};
+
+let estado = { sageWb: null, configWb: null, configArrayBuffer: null, modeloWb: null, prefixoSelecionado: "", diagnostico: null };
+
+function mostrarErro(msg) {
+  const area = document.getElementById("erro-area");
+  if (!msg) { area.innerHTML = ""; return; }
+  area.innerHTML = '<div class="erro"></div>';
+  area.querySelector(".erro").textContent = msg;
+}
+
+function lerArquivo(input, tipo, comVba) {
+  const file = input.files[0];
+  if (!file) return;
+  mostrarErro(null);
+  const btn = document.getElementById("btn-arq-" + tipo);
+  const nomeDiv = document.getElementById("nome-" + tipo);
+  btn.textContent = "Lendo...";
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: "array", bookVBA: !!comVba });
+      if (tipo === "sage") {
+        estado.sageWb = wb;
+        const lista = detectarPrefixos(wb);
+        popularSelectPrefixos(lista);
+        document.getElementById("caixa-subestacao").classList.remove("oculto");
+      } else if (tipo === "config") {
+        estado.configWb = wb;
+        estado.configArrayBuffer = e.target.result; // guarda os bytes originais intactos p/ o editor cirúrgico
+      } else {
+        estado.modeloWb = wb;
+      }
+      btn.textContent = "Trocar arquivo";
+      btn.classList.add("carregado");
+      nomeDiv.textContent = file.name;
+      estado.diagnostico = null;
+      document.getElementById("area-resultado").innerHTML = "";
+      atualizarBotaoDiagnostico();
+    } catch (err) {
+      mostrarErro('Não consegui ler o arquivo "' + file.name + '": ' + err.message);
+      btn.textContent = "Escolher arquivo";
+    }
+  };
+  reader.onerror = function () {
+    mostrarErro('Falha ao carregar "' + file.name + '".');
+    btn.textContent = "Escolher arquivo";
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function popularSelectPrefixos(lista) {
+  const select = document.getElementById("select-prefixo");
+  select.innerHTML = "";
+  lista.forEach(function (par) {
+    const p = par[0], n = par[1];
+    const opt = document.createElement("option");
+    opt.value = p;
+    opt.textContent = p + " — " + (NOMES_CONHECIDOS[p] || "nome não identificado") + " (" + n + " pontos no SAGE)";
+    select.appendChild(opt);
+  });
+  estado.prefixoSelecionado = lista.length ? lista[0][0] : "";
+  select.onchange = function () {
+    estado.prefixoSelecionado = select.value;
+    estado.diagnostico = null;
+    document.getElementById("area-resultado").innerHTML = "";
+  };
+}
+
+function atualizarBotaoDiagnostico() {
+  const pronto = estado.sageWb && estado.configWb && estado.prefixoSelecionado;
+  document.getElementById("btn-diagnostico").disabled = !pronto;
+}
+
+function rodarDiagnostico() {
+  if (!estado.sageWb || !estado.configWb || !estado.prefixoSelecionado) return;
+  mostrarErro(null);
+  const btn = document.getElementById("btn-diagnostico");
+  btn.disabled = true;
+  btn.textContent = "Processando…";
+  setTimeout(function () {
+    try {
+      const r = diagnosticarESugerir(estado.sageWb, estado.configWb, estado.prefixoSelecionado, estado.modeloWb);
+      estado.diagnostico = r;
+      renderizarResultado(r);
+    } catch (err) {
+      mostrarErro("Erro ao rodar o diagnóstico: " + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Rodar diagnóstico";
+    }
+  }, 30);
+}
+
+function renderizarResultado(r) {
+  const area = document.getElementById("area-resultado");
+  const prefixo = estado.prefixoSelecionado;
+  let html = '<div class="resultado-titulo">Diagnóstico — ' + prefixo + " (" + (NOMES_CONHECIDOS[prefixo] || "nome não identificado") + ")</div>";
+
+  for (const [sageSheet, info] of Object.entries(r.resultado)) {
+    const cont = {};
+    info.linhas.forEach(function (l) { cont[l.Status] = (cont[l.Status] || 0) + 1; });
+    html += '<div class="resultado-linha"><div class="resultado-cabecalho"><strong>' + info.otsSheet + "</strong><span>" +
+      info.totalSage + " no SAGE · " + info.jaConfigurado + " já configurados · " + info.linhas.length + " faltando</span></div>";
+    if (info.linhas.length > 0) {
+      html += '<div class="etiquetas">';
+      for (const [st, n] of Object.entries(cont)) {
+        html += '<span class="etiqueta ' + STATUS_INFO[st].classe + '">' + n + "× " + STATUS_INFO[st].texto + "</span>";
+      }
+      html += "</div>";
+    }
+    html += "</div>";
+  }
+  if (r.conflitos.length > 0) {
+    html += '<div class="conflito-nota">' + r.conflitos.length + " conflito(s) de PathName entre a EstruturaEqps e o modelo elétrico encontrados (o modelo prevalece).</div>";
+  }
+  html += '<button id="btn-aplicar">Aplicar e baixar planilha atualizada (.xlsm)</button>';
+  html += '<p class="nota">Só escreve os pontos com equipamento já existente no modelo elétrico. Os que ' +
+    'precisam de modelagem no Elipse Studio primeiro vão para uma aba "Pendencias_' + prefixo + '" no arquivo ' +
+    "baixado, sem inventar PathName. O resto do arquivo — macro VBA, estilos, validações, fórmulas — fica " +
+    "byte a byte idêntico ao original; só as abas realmente alteradas mudam.</p>";
+  html += '<div id="resumo-aplicado-area"></div>';
+  area.innerHTML = html;
+  document.getElementById("btn-aplicar").onclick = aplicarEBaixar;
+}
+
+async function aplicarEBaixar() {
+  if (!estado.sageWb || !estado.configArrayBuffer || !estado.prefixoSelecionado) return;
+  mostrarErro(null);
+  const btn = document.getElementById("btn-aplicar");
+  btn.disabled = true;
+  btn.textContent = "Gerando…";
+  try {
+    // sempre parte dos bytes ORIGINAIS carregados (nunca do resultado de uma aplicação anterior),
+    // e edita só as partes XML estritamente necessárias — o resto do arquivo fica byte a byte igual.
+    const comTimeout = (promessa, ms, mensagem) => Promise.race([
+      promessa,
+      new Promise((_, rej) => setTimeout(() => rej(new Error(mensagem)), ms)),
+    ]);
+    const { outBuffer, resumo } = await comTimeout(
+      aplicarCirurgico(estado.sageWb, estado.configArrayBuffer, estado.prefixoSelecionado, estado.modeloWb),
+      60000,
+      "Demorou mais de 60s para gerar o arquivo — pode ser um navegador com pouca memória para um arquivo deste tamanho. Tente fechar outras abas e rodar de novo, ou use o script Python equivalente."
+    );
+    const blob = new Blob([outBuffer], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "Configuracao_da_importacao_ATUALIZADA_" + estado.prefixoSelecionado + ".xlsm";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    const totalEscrito = Object.values(resumo).reduce(function (acc, r) { return acc + r.escritas; }, 0);
+    const totalPendente = Object.values(resumo).reduce(function (acc, r) { return acc + r.pendentes; }, 0);
+    document.getElementById("resumo-aplicado-area").innerHTML =
+      '<div class="resumo-aplicado">Baixado. Escrito: ' + totalEscrito + " ponto(s). Pendente: " + totalPendente +
+      " ponto(s) (aba de pendências no arquivo). Nada mais no arquivo foi tocado.</div>";
+  } catch (err) {
+    mostrarErro("Erro ao aplicar as alterações: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Aplicar e baixar planilha atualizada (.xlsm)";
+  }
+}
+
+document.getElementById("arq-sage").addEventListener("change", function (e) { lerArquivo(e.target, "sage", false); });
+document.getElementById("arq-config").addEventListener("change", function (e) { lerArquivo(e.target, "config", true); });
+document.getElementById("arq-modelo").addEventListener("change", function (e) { lerArquivo(e.target, "modelo", false); });
+document.getElementById("btn-arq-sage").addEventListener("click", function () { document.getElementById("arq-sage").click(); });
+document.getElementById("btn-arq-config").addEventListener("click", function () { document.getElementById("arq-config").click(); });
+document.getElementById("btn-arq-modelo").addEventListener("click", function () { document.getElementById("arq-modelo").click(); });
+document.getElementById("btn-diagnostico").addEventListener("click", rodarDiagnostico);
+</script>
+</body>
+</html>
